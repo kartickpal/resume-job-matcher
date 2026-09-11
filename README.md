@@ -1,36 +1,100 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Resume Job Matcher
 
-## Getting Started
+An AI-powered full-stack web application that compares a resume with a job description using Google Gemini and generates an intelligent job-match analysis.
 
-First, run the development server:
+The application analyzes the resume and job description, calculates a match score, identifies matched and missing skills, and provides AI-generated feedback. The analysis is also stored in PostgreSQL.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## 🚀 Features
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- Paste resume text
+- Paste a job description
+- Analyze resume-job compatibility using Google Gemini
+- Generate an AI match score from 0–100
+- Identify matched skills
+- Identify missing skills
+- Generate AI feedback
+- Store users in PostgreSQL
+- Store resumes in PostgreSQL
+- Store job descriptions and AI analysis results in PostgreSQL
+- REST API using Next.js App Router
+- Frontend validation
+- Loading state during AI analysis
+- Error handling
+- Structured JSON response from Gemini
+- Environment-variable based configuration
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 🛠️ Tech Stack
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Frontend
 
-## Learn More
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
 
-To learn more about Next.js, take a look at the following resources:
+### Backend
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- Next.js App Router
+- Next.js API Routes
+- Node.js
+- REST API
+- `fetch()`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Database
 
-## Deploy on Vercel
+- PostgreSQL
+- SQL
+- `pg` Node.js library
+- Connection pooling
+- Foreign keys
+- Parameterized SQL queries
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### AI
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Google Gemini API
+- `@google/genai`
+- Prompt Engineering
+- Structured JSON AI responses
+- AI-based resume-job matching
+
+### Development Tools
+
+- Git
+- GitHub
+- VS Code
+- npm
+- Node.js
+
+## 🏗️ Project Architecture
+
+```text
+User
+  │
+  ▼
+Next.js Frontend
+  │
+  │ Resume + Job Description
+  ▼
+/api/match
+  │
+  ├──────────────► Google Gemini API
+  │                       │
+  │                       ▼
+  │                AI Analysis (JSON)
+  │                ├── Match Score
+  │                ├── Matched Skills
+  │                ├── Missing Skills
+  │                └── AI Feedback
+  │
+  ▼
+PostgreSQL
+  │
+  ├── users
+  ├── resumes
+  └── match_results
+  │
+  ▼
+Response
+  │
+  ▼
+Match Analysis displayed in Frontend
