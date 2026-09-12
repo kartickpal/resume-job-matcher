@@ -7,204 +7,297 @@ const ai = new GoogleGenAI({
 });
 
 export async function POST(request: Request) {
+  let client;
+
   try {
-    const body = await request.json();
+    client = await pool.connect();
 
-    const { resume, jobDescription } = body;
+    let body;
 
-    // Validate input
-    if (!resume?.trim() || !jobDescription?.trim()) {
+    try {
+      body = await request.json();
+    } catch {
       return NextResponse.json(
-        {
-          error: "Resume and job description are required",
-        },
-        {
-          status: 400,
-        }
+        { error: "Invalid request. Please try again." },
+        { status: 400 }
       );
     }
 
-    // =========================
-    // 1. Gemini AI Analysis
-    // =========================
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const email = typeof body.email === "string" ? body.email.trim() : "";
+    const resume = typeof body.resume === "string" ? body.resume.trim() : "";
+    const jobDescription =
+      typeof body.jobDescription === "string"
+        ? body.jobDescription.trim()
+        : "";
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `
-You are an expert technical recruiter and resume analyzer.
+    // -----------------------------
+    // Input validation
+    // -----------------------------
 
-Analyze the resume against the job description.
+    if (!name || !email || !resume || !jobDescription) {
+      return NextResponse.json(
+        {
+          error:
+            "Name, email, resume, and job description are required.",
+        },
+        { status: 400 }
+      );
+    }
 
-RESUME:
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return NextResponse.json(
+        { error: "Please provide a valid email address." },
+        { status: 400 }
+      );
+    }
+
+    if (resume.length < 25) {
+      return NextResponse.json(
+        {
+          error: "Resume must contain at least 25 characters.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (jobDescription.length < 100) {
+      return NextResponse.json(
+        {
+          error:
+            "Job description must contain at least 100 characters.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // -----------------------------
+    // Gemini AI analysis
+    // -----------------------------
+
+    const prompt = `You are an expert career analyst.
+
+Compare the candidate resume with the job description and return ONLY valid JSON.
+
+Resume:
 ${resume}
 
-JOB DESCRIPTION:
+Job Description:
 ${jobDescription}
 
-Return ONLY valid JSON.
-
-Use exactly this structure:
-
+Return this exact JSON structure:
 {
-  "matchScore": 85,
-  "matchedSkills": ["Python", "SQL", "Pandas"],
-  "missingSkills": ["Power BI"],
-  "aiFeedback": "The candidate is a strong match for the position."
+  "matchScore": 0,
+  "matchedSkills": [],
+  "missingSkills": [],
+  "strengths": [],
+  "skillGapExplanation": "",
+  "recommendations": [],
+  "aiFeedback": ""
 }
 
 Rules:
 - matchScore must be a number from 0 to 100.
-- matchedSkills must be an array of strings.
-- missingSkills must be an array of strings.
-- aiFeedback must be a short string.
-- Do not include markdown.
-- Do not include code fences.
-- Do not include any text outside the JSON object.
-`,
-    });
+- matchedSkills, missingSkills, strengths, and recommendations must be arrays of strings.
+- skillGapExplanation and aiFeedback must be strings.
+- Do not include markdown or code fences.`;
 
-    // Get Gemini text
-    const aiText = response.text || "";
+    let response;
 
-    console.log("Gemini Raw Response:", aiText);
+    try {
+      response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+      });
+    } catch (error) {
+      console.error("Gemini API Error:", error);
 
-    // Convert Gemini JSON text into JavaScript object
+      return NextResponse.json(
+        {
+          error:
+            "AI analysis is temporarily unavailable. Please try again.",
+        },
+        { status: 503 }
+      );
+    }
+
+    const textResponse = response.text?.trim();
+
+    if (!textResponse) {
+      return NextResponse.json(
+        {
+          error:
+            "The AI returned an empty response. Please try again.",
+        },
+        { status: 502 }
+      );
+    }
+
     let aiResult;
 
     try {
-      aiResult = JSON.parse(aiText);
+      const cleaned = textResponse
+        .replace(/^```json\s*/i, "")
+        .replace(/^```\s*/i, "")
+        .replace(/\s*```$/i, "")
+        .trim();
+
+      aiResult = JSON.parse(cleaned);
     } catch (error) {
-      console.error("Gemini JSON Parse Error:", error);
+      console.error("Gemini JSON Parsing Error:", error);
 
       return NextResponse.json(
         {
-          error: "Gemini returned an invalid JSON response",
-          rawResponse: aiText,
+          error:
+            "The AI returned an invalid analysis. Please try again.",
         },
-        {
-          status: 500,
-        }
+        { status: 502 }
       );
     }
 
-    // Validate AI result
+    // -----------------------------
+    // Validate AI response
+    // -----------------------------
+
     if (
       typeof aiResult.matchScore !== "number" ||
+      aiResult.matchScore < 0 ||
+      aiResult.matchScore > 100 ||
       !Array.isArray(aiResult.matchedSkills) ||
       !Array.isArray(aiResult.missingSkills) ||
+      !Array.isArray(aiResult.strengths) ||
+      typeof aiResult.skillGapExplanation !== "string" ||
+      !Array.isArray(aiResult.recommendations) ||
       typeof aiResult.aiFeedback !== "string"
     ) {
+      console.error("Invalid Gemini analysis structure:", aiResult);
+
       return NextResponse.json(
         {
-          error: "Gemini returned an invalid response structure",
+          error:
+            "The AI returned incomplete analysis data. Please try again.",
         },
-        {
-          status: 500,
-        }
+        { status: 502 }
       );
     }
 
-    // =========================
-    // 2. Create / Find User
-    // =========================
+    // -----------------------------
+    // PostgreSQL transaction
+    // -----------------------------
 
-    const userResult = await pool.query(
-      `
-      INSERT INTO users (name, email)
-      VALUES ($1, $2)
-      ON CONFLICT (email)
-      DO UPDATE SET name = EXCLUDED.name
-      RETURNING id, name, email
-      `,
-      ["Test User", "test@example.com"]
-    );
+    try {
+      await client.query("BEGIN");
 
-    const user = userResult.rows[0];
+      // Save or update user
+      const userResult = await client.query(
+        `
+        INSERT INTO users (name, email)
+        VALUES ($1, $2)
+        ON CONFLICT (email)
+        DO UPDATE SET name = EXCLUDED.name
+        RETURNING id, name, email
+        `,
+        [name, email]
+      );
 
-    // =========================
-    // 3. Save Resume
-    // =========================
+      const user = userResult.rows[0];
 
-    const resumeResult = await pool.query(
-      `
-      INSERT INTO resumes (user_id, resume_text)
-      VALUES ($1, $2)
-      RETURNING id, user_id, resume_text
-      `,
-      [user.id, resume]
-    );
+      // Save resume
+      const resumeResult = await client.query(
+        `
+        INSERT INTO resumes (user_id, resume_text)
+        VALUES ($1, $2)
+        RETURNING id, user_id, resume_text
+        `,
+        [user.id, resume]
+      );
 
-    const savedResume = resumeResult.rows[0];
+      const savedResume = resumeResult.rows[0];
 
-    // =========================
-    // 4. Save AI Match Result
-    // =========================
+      // Save match result
+      const matchResult = await client.query(
+        `
+        INSERT INTO match_results (
+          user_id,
+          resume_id,
+          job_description,
+          match_score,
+          matched_skills,
+          missing_skills,
+          strengths,
+          skill_gap_explanation,
+          recommendations,
+          ai_feedback
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+        )
+        RETURNING
+          id,
+          user_id,
+          resume_id,
+          job_description,
+          match_score,
+          matched_skills,
+          missing_skills,
+          strengths,
+          skill_gap_explanation,
+          recommendations,
+          ai_feedback
+        `,
+        [
+          user.id,
+          savedResume.id,
+          jobDescription,
+          aiResult.matchScore,
+          aiResult.matchedSkills.join(", "),
+          aiResult.missingSkills.join(", "),
+          aiResult.strengths.join(", "),
+          aiResult.skillGapExplanation,
+          aiResult.recommendations.join(", "),
+          aiResult.aiFeedback,
+        ]
+      );
 
-    const matchResult = await pool.query(
-      `
-      INSERT INTO match_results (
-        user_id,
-        resume_id,
-        job_description,
-        match_score,
-        matched_skills,
-        missing_skills,
-        ai_feedback
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING
-        id,
-        user_id,
-        resume_id,
-        job_description,
-        match_score,
-        matched_skills,
-        missing_skills,
-        ai_feedback
-      `,
-      [
-        user.id,
-        savedResume.id,
-        jobDescription,
-        aiResult.matchScore,
-        aiResult.matchedSkills.join(", "),
-        aiResult.missingSkills.join(", "),
-        aiResult.aiFeedback,
-      ]
-    );
+      await client.query("COMMIT");
 
-    const savedMatch = matchResult.rows[0];
+      return NextResponse.json({
+        message: "Resume analyzed successfully.",
+        aiAnalysis: aiResult,
+        user,
+        resume: savedResume,
+        match: matchResult.rows[0],
+      });
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Rollback Error:", rollbackError);
+      }
 
-    // =========================
-    // 5. Send Response
-    // =========================
+      console.error("Database Error:", error);
 
-    return NextResponse.json({
-      message: "Resume analysis completed successfully",
-
-      aiAnalysis: {
-        matchScore: aiResult.matchScore,
-        matchedSkills: aiResult.matchedSkills,
-        missingSkills: aiResult.missingSkills,
-        aiFeedback: aiResult.aiFeedback,
-      },
-
-      user,
-
-      resume: savedResume,
-
-      match: savedMatch,
-    });
+      return NextResponse.json(
+        {
+          error:
+            "We couldn't save your analysis. Please try again.",
+        },
+        { status: 500 }
+      );
+    }
   } catch (error) {
-    console.error("API Error:", error);
+    console.error("Unexpected Match API Error:", error);
 
     return NextResponse.json(
       {
-        error: "AI or database operation failed",
+        error:
+          "Something went wrong while analyzing your resume. Please try again.",
       },
-      {
-        status: 500,
-      }
+      { status: 500 }
     );
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
